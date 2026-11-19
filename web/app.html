@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HyperShift Quest</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --panel2: #1c2129; --line: #30363d;
+    --fg: #e6edf3; --dim: #8b949e; --gold: #e3b341;
+    --arch: #58a6ff; --net: #3fb950; --cpo: #bc8cff; --data: #f0883e;
+    --life: #39c5cf; --kv: #ff7b72;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: var(--fg);
+    font: 15px/1.45 ui-sans-serif, system-ui, "Segoe UI", sans-serif; }
+  a { color: var(--arch); }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  h1 .die { color: var(--gold); }
+  .sub { color: var(--dim); margin-bottom: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 16px; margin-bottom: 14px; }
+  input, button { font: inherit; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--panel2); color: var(--fg); padding: 10px 14px; }
+  input { width: 100%; }
+  button { cursor: pointer; font-weight: 600; }
+  button.primary { background: #238636; border-color: #2ea043; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .row { display: flex; gap: 10px; }
+  .row > * { flex: 1; }
+  .big { font-size: 34px; font-weight: 800; letter-spacing: .12em; }
+  .muted { color: var(--dim); }
+  .chip { display: inline-block; padding: 2px 10px; border-radius: 99px;
+    font-size: 12px; font-weight: 700; text-transform: uppercase; }
+  .cat-architecture { background: color-mix(in srgb, var(--arch) 25%, transparent); color: var(--arch); }
+  .cat-networking   { background: color-mix(in srgb, var(--net) 25%, transparent); color: var(--net); }
+  .cat-control-plane{ background: color-mix(in srgb, var(--cpo) 25%, transparent); color: var(--cpo); }
+  .cat-data-plane   { background: color-mix(in srgb, var(--data) 25%, transparent); color: var(--data); }
+  .cat-lifecycle    { background: color-mix(in srgb, var(--life) 25%, transparent); color: var(--life); }
+  .cat-kubevirt     { background: color-mix(in srgb, var(--kv) 25%, transparent); color: var(--kv); }
+  .cat- { background: var(--panel2); color: var(--dim); }
+
+  /* leaderboard */
+  table { width: 100%; border-collapse: collapse; }
+  td, th { padding: 7px 8px; text-align: left; border-bottom: 1px solid var(--line); }
+  th { color: var(--dim); font-size: 12px; text-transform: uppercase; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.me td { background: color-mix(in srgb, var(--arch) 8%, transparent); }
+  .streak { color: var(--gold); }
+  .gained { color: var(--net); font-weight: 700; }
+  .lost { color: var(--kv); }
+
+  /* board */
+  .board { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
+  .tile { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    min-height: 64px; padding: 4px 6px; position: relative; }
+  .tile .n { font-size: 11px; color: var(--dim); }
+  .tile.finish { border-color: var(--gold); }
+  .tile .fmt { font-size: 10px; color: var(--dim); text-transform: uppercase; }
+  .tile.b-architecture { border-left: 4px solid var(--arch); }
+  .tile.b-networking { border-left: 4px solid var(--net); }
+  .tile.b-control-plane { border-left: 4px solid var(--cpo); }
+  .tile.b-data-plane { border-left: 4px solid var(--data); }
+  .tile.b-lifecycle { border-left: 4px solid var(--life); }
+  .tile.b-kubevirt { border-left: 4px solid var(--kv); }
+  .tokens { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 3px; }
+  .token { width: 22px; height: 22px; border-radius: 50%; font-size: 10px;
+    font-weight: 800; display: flex; align-items: center; justify-content: center;
+    color: #0d1117; border: 2px solid rgba(255,255,255,.25); }
+
+  /* question */
+  .qhead { display: flex; justify-content: space-between; align-items: center;
+    gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+  .timer { height: 8px; background: var(--panel2); border-radius: 4px; overflow: hidden;
+    margin: 10px 0 16px; }
+  .timer > div { height: 100%; background: var(--gold); width: 100%; }
+  .timer.low > div { background: var(--kv); }
+  .opts { display: grid; gap: 10px; }
+  @media (min-width: 700px) { .opts.two { grid-template-columns: 1fr 1fr; } }
+  .opt { text-align: left; padding: 14px; font-size: 16px; line-height: 1.35; }
+  .opt.correct { background: #1a4326; border-color: #2ea043; }
+  .opt.wrong { background: #4a1d24; border-color: var(--kv); opacity: .8; }
+  .why { border-left: 3px solid var(--gold); padding-left: 12px; margin-top: 14px; }
+  .why .src { color: var(--dim); font-family: ui-monospace, monospace; font-size: 12px; }
+  .podium { font-size: 20px; }
+  .podium .first { color: var(--gold); font-size: 26px; font-weight: 800; }
+  .flex2 { display: grid; grid-template-columns: 1fr 380px; gap: 14px; align-items: start; }
+  @media (max-width: 900px) { .flex2 { grid-template-columns: 1fr; } }
+  .hidden { display: none !important; }
+  .error { color: var(--kv); margin-top: 8px; min-height: 20px; }
+</style>
+</head>
+<body>
+<div class="wrap" id="app"></div>
+
+<script>
+"use strict";
+const ROLE = location.pathname === "/host" ? "host"
+           : location.pathname === "/board" ? "board" : "player";
+const LS = { player: "quest." + ROLE + ".player", code: "quest." + ROLE + ".code", host: "quest.host.host" };
+const CATS = ["architecture","networking","control-plane","data-plane","lifecycle","kubevirt"];
+const TOKEN_COLORS = ["#58a6ff","#3fb950","#bc8cff","#f0883e","#39c5cf","#ff7b72","#e3b341","#7ee787","#79c0ff","#ffa657"];
+let state = null, hostView = null, es = null, timerInt = null;
+
+const el = (html) => { const d = document.createElement("div"); d.innerHTML = html.trim(); return d.firstChild; };
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const store = {
+  get: (k) => { try { return localStorage.getItem(k); } catch { return null; } },
+  set: (k, v) => { try { localStorage.setItem(k, v); } catch {} },
+  del: (k) => { try { localStorage.removeItem(k); } catch {} },
+};
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+
+/* ---------------- join / create ---------------- */
+
+function playerJoinScreen(err) {
+  const app = document.getElementById("app");
+  app.innerHTML = "";
+  app.appendChild(el(`
+    <div class="card" style="max-width:460px;margin:8vh auto">
+      <h1><span class="die">🎲</span> HyperShift Quest</h1>
+      <p class="sub">The HyperShift board game — race your token to tile 24.</p>
+      <div class="row">
+        <input id="code" placeholder="Room code" maxlength="4" autocapitalize="characters" style="text-transform:uppercase">
+        <input id="name" placeholder="Your name" maxlength="24">
+      </div>
+      <div class="error">${esc(err || "")}</div>
+      <button class="primary" id="go" style="width:100%">Join</button>
+    </div>`));
+  const go = async () => {
+    try {
+      const res = await api(`/api/rooms/${code.value.trim().toUpperCase()}/join`, { name: name.value.trim() });
+      store.set(LS.player, res.playerId); store.set(LS.code, res.code);
+      connect(res.code);
+    } catch (e) { playerJoinScreen(e.message); }
+  };
+  document.getElementById("go").onclick = go;
+  app.querySelectorAll("input").forEach(i => i.onkeydown = (e) => { if (e.key === "Enter") go(); });
+}
+
+function hostStartScreen(err) {
+  const app = document.getElementById("app");
+  app.innerHTML = "";
+  app.appendChild(el(`
+    <div class="card" style="max-width:560px;margin:8vh auto">
+      <h1><span class="die">🎲</span> Host console</h1>
+      <p class="sub">Create a room, share the code, run the game.</p>
+      <button class="primary" id="create" style="width:100%">Create room</button>
+      <div class="error">${esc(err || "")}</div>
+    </div>`));
+  document.getElementById("create").onclick = async () => {
+    try {
+      const res = await api("/api/rooms", {});
+      store.set(LS.host, res.hostId); store.set(LS.code, res.code);
+      connect(res.code);
+    } catch (e) { hostStartScreen(e.message); }
+  };
+}
+
+function connect(code) {
+  if (es) es.close();
+  es = new EventSource(`/api/rooms/${code}/events`);
+  es.onmessage = (m) => { state = JSON.parse(m.data); render(); };
+  es.onerror = () => { /* EventSource auto-reconnects; state replays on connect */ };
+  if (ROLE === "host") pollHostView();
+}
+
+async function pollHostView() {
+  const code = store.get(LS.code), hostId = store.get(LS.host);
+  if (!code || !hostId) return;
+  try {
+    const r = await fetch(`/api/rooms/${code}/hostview?hostId=${encodeURIComponent(hostId)}`);
+    hostView = r.ok ? await r.json() : null;
+    if (hostView && hostView.host) render();
+  } catch {}
+  setTimeout(pollHostView, 2500);
+}
+
+/* ---------------- render ---------------- */
+
+function render() {
+  if (timerInt) { clearInterval(timerInt); timerInt = null; }
+  const app = document.getElementById("app");
+  app.innerHTML = "";
+  if (ROLE === "player" && !store.get(LS.player)) return playerJoinScreen();
+  if (ROLE === "host" && !store.get(LS.host)) return hostStartScreen();
+  if (!state) { app.appendChild(el('<div class="card">Connecting…</div>')); return; }
+
+  if (ROLE === "host") renderHost(app);
+  else if (ROLE === "board") renderBoard(app);
+  else renderPlayer(app);
+}
+
+function header(sub) {
+  return `<h1><span class="die">🎲</span> HyperShift Quest</h1><p class="sub">${sub}</p>`;
+}
+
+function leaderboard() {
+  const rows = (state.players || []).slice().sort((a, b) => b.score - a.score || b.tile - a.tile);
+  const me = store.get(LS.player);
+  return `<table><tr><th>#</th><th>Player</th><th class="num">Tile</th><th class="num">Score</th></tr>` +
+    rows.map((p, i) => `
+      <tr class="${me && state.__pid === me ? "" : ""}">
+        <td>${i + 1}</td>
+        <td>${esc(p.name)} ${p.streak >= 2 ? '<span class="streak">🔥' + p.streak + "</span>" : ""}</td>
+        <td class="num">${p.tile}/24</td>
+        <td class="num">${p.score}${p.lastGained ? ` <span class="${p.lastCorrect ? "gained" : "lost"}">${p.lastCorrect ? "+" + p.lastGained : "✗"}</span>` : ""}</td>
+      </tr>`).join("") + "</table>";
+}
+
+function boardView() {
+  const tiles = state.board.tiles || [];
+  const rows = [[], [], [], []];
+  tiles.slice().sort((a, b) => a.n - b.n).forEach(t => {
+    const r = Math.floor((t.n - 1) / 6);
+    rows[r === 4 ? 3 : r].push(t); // 24 tiles -> 4 rows
+  });
+  // serpentine: rows 2 and 4 render right-to-left
+  const order = [...rows[0], ...rows[1].reverse(), ...rows[2], ...rows[3].reverse()];
+  const tokens = {};
+  (state.players || []).forEach((p, i) => { (tokens[p.tile] = tokens[p.tile] || []).push({ ...p, color: TOKEN_COLORS[i % TOKEN_COLORS.length] }); });
+  return `<div class="board">` + order.map(t => `
+    <div class="tile b-${t.category || ""} ${t.type === "finish" ? "finish" : ""}" title="tile ${t.n}">
+      <span class="n">${t.n}${t.type === "start" ? " GO" : t.type === "finish" ? " FIN" : t.type === "wild" ? " ?" : t.special === "challenge" ? " !" : ""}</span>
+      <span class="fmt">${t.category ? t.category.slice(0, 4) : ""}</span>
+      <div class="tokens">${(tokens[t.n] || []).map(p =>
+        `<span class="token" style="background:${p.color}" title="${esc(p.name)}">${esc(p.name.slice(0, 2).toUpperCase())}</span>`).join("")}</div>
+    </div>`).join("") + "</div>";
+}
+
+function questionBlock(interactive) {
+  const q = state.question;
+  if (!q) return "";
+  const secs = q.seconds || 30;
+  let html = `<div class="card">
+    <div class="qhead">
+      <span><span class="chip cat-${q.topic}">${esc(q.topic)}</span>
+        <span class="chip cat-">depth ${q.depth}</span></span>
+      <span class="muted">question ${state.round + 1}/${state.totalRounds}</span>
+    </div>
+    <div style="font-size:19px;font-weight:600;margin:6px 0 4px;white-space:pre-wrap">${esc(q.text)}</div>
+    <div class="timer" id="timer"><div></div></div>
+    <div class="opts ${q.options.length === 4 ? "two" : ""}">` +
+    q.options.map((o, i) =>
+      `<button class="opt ${optionClass(o, interactive)}" data-id="${o.id}" ${interactive ? "" : "disabled"}>${esc(o.text)}</button>`
+    ).join("") + "</div>";
+  if (state.reveal) {
+    html += `<div class="why"><p>${esc(state.reveal.why)}</p><p class="src">source: ${esc(state.reveal.source)}</p></div>`;
+  }
+  html += "</div>";
+  return html;
+}
+
+function optionClass(o, interactive) {
+  if (!state.reveal) return "";
+  if (o.id === state.reveal.correctId) return "correct";
+  return "";
+}
+
+function startTimer() {
+  if (!state.question || !state.deadlineMs) return;
+  const bar = document.querySelector("#timer > div");
+  if (!bar) return;
+  const total = (state.question.seconds || 30) * 1000;
+  const tick = () => {
+    const left = state.deadlineMs - Date.now();
+    const frac = Math.max(0, left / total);
+    bar.style.width = (frac * 100) + "%";
+    document.getElementById("timer")?.classList.toggle("low", frac < 0.25);
+  };
+  tick(); timerInt = setInterval(tick, 200);
+}
+
+/* ---- player ---- */
+
+function renderPlayer(app) {
+  const shell = el(`<div>
+    ${header(`room <b>${esc(state.code)}</b> — ${esc(phaseLabel())}`)}
+    <div class="flex2"><div id="main"></div>
+    <div class="card"><h3 style="margin-bottom:8px">Leaderboard</h3>${leaderboard()}</div></div>
+  </div>`);
+  app.appendChild(shell);
+  const main = shell.querySelector("#main");
+
+  if (state.phase === "lobby") {
+    main.appendChild(el(`<div class="card"><p>Waiting in the lobby…</p>
+      <p class="muted">The host starts the game when everyone is in. ${state.players.length} player(s) so far.</p></div>`));
+  } else if (state.phase === "question" || state.phase === "reveal") {
+    main.appendChild(el(questionBlock(state.phase === "question")));
+    startTimer();
+    main.querySelectorAll(".opt").forEach(btn => {
+      btn.onclick = async () => {
+        try {
+          await api(`/api/rooms/${state.code}/answer`, { playerId: store.get(LS.player), optionId: +btn.dataset.id });
+          btn.style.outline = "2px solid var(--gold)";
+        } catch (e) { /* already answered, timed out, … */ }
+      };
+    });
+    if (state.phase === "reveal") {
+      const res = (state.reveal.results || []);
+      main.appendChild(el(`<div class="card">${
+        res.map(r => `<div>${r.correct ? "✅" : "❌"} ${esc(r.name)} ${r.correct ? '<span class="gained">+' + r.gained + "</span>" : ""}</div>`).join("")
+      }</div>`));
+    }
+  } else if (state.phase === "finished") {
+    main.appendChild(el(finishCard()));
+  }
+}
+
+/* ---- host ---- */
+
+function renderHost(app) {
+  const shell = el(`<div>
+    ${header(`host console — room <b class="big" style="font-size:24px">${esc(state.code)}</b>`)}
+    <div class="flex2"><div id="main"></div>
+    <div class="card"><h3 style="margin-bottom:8px">Players</h3>${leaderboard()}
+      <div class="row" style="margin-top:12px">
+        ${hostButton("start", "Start game", state.phase === "lobby" && state.players.length > 0)}
+        ${hostButton("next", state.phase === "reveal" ? "Next question" : "Skip / next", state.phase === "question" || state.phase === "reveal")}
+        ${hostButton("end", "End game", state.phase !== "lobby")}
+      </div></div></div>
+  </div>`);
+  app.appendChild(shell);
+  const main = shell.querySelector("#main");
+
+  if (state.phase === "lobby") {
+    main.appendChild(el(`<div class="card"><p>Share the code <b>${esc(state.code)}</b> — players join at
+      <b>${esc(location.origin + "/")}</b></p>
+      <p class="muted">${state.players.length} player(s) in the lobby.</p></div>`));
+  } else if (state.phase === "question" || state.phase === "reveal") {
+    main.appendChild(el(questionBlock(false)));
+    startTimer();
+    if (hostView && hostView.host) {
+      main.appendChild(el(`<div class="card"><b>Answer (host only):</b>
+        <p style="margin-top:6px">${esc(hostView.host.correct)}</p>
+        <div class="why"><p>${esc(hostView.host.why)}</p><p class="src">source: ${esc(hostView.host.source)}</p></div></div>`));
+    }
+  } else if (state.phase === "finished") {
+    main.appendChild(el(finishCard()));
+    main.appendChild(el(`<div class="card"><button onclick="location.reload()">New room</button></div>`));
+  }
+  shell.querySelectorAll("button[data-action]").forEach(b => {
+    b.onclick = async () => {
+      try { await api(`/api/rooms/${state.code}/host/${b.dataset.action}`, { hostId: store.get(LS.host) }); }
+      catch (e) { alert(e.message); }
+    };
+  });
+}
+
+function hostButton(action, label, enabled) {
+  return `<button data-action="${action}" ${enabled ? "" : "disabled"}>${label}</button>`;
+}
+
+/* ---- board (spectator) ---- */
+
+function renderBoard(app) {
+  const shell = el(`<div>
+    ${header(`room <b>${esc(state.code)}</b> — ${esc(phaseLabel())} — the big screen view`)}
+    <div class="flex2">
+      <div><div class="card">${boardView()}</div>
+        <div id="qslot" style="margin-top:14px"></div></div>
+      <div class="card"><h3 style="margin-bottom:8px">Leaderboard</h3>${leaderboard()}</div>
+    </div></div>`);
+  app.appendChild(shell);
+  if (state.question) {
+    shell.querySelector("#qslot").appendChild(el(questionBlock(false)));
+    startTimer();
+  }
+}
+
+/* ---- shared ---- */
+
+function phaseLabel() {
+  return { lobby: "lobby", question: "question live", reveal: "reveal", finished: "game over" }[state.phase] || state.phase;
+}
+
+function finishCard() {
+  const rows = (state.players || []).slice().sort((a, b) => b.tile - a.tile || b.score - a.score);
+  const winner = state.winner || rows[0]?.name || "—";
+  return `<div class="card podium">
+    <p class="muted">first to tile 24 (or best position after the final round)</p>
+    <p class="first">🏆 ${esc(winner)}</p>
+    ${rows.map((p, i) => `<p>${i + 1}. ${esc(p.name)} — tile ${p.tile}, ${p.score} points</p>`).join("")}
+  </div>`;
+}
+
+/* boot */
+render();
+</script>
+</body>
+</html>

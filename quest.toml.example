@@ -1,0 +1,21 @@
+# HyperShift Quest server configuration.
+# Copy to quest.toml (gitignored) and adjust, or pass -config <path>.
+# Every field has a working default — the file itself is optional.
+
+# Listen address. Players connect to http://<this-host>:<port>/.
+addr = ":8080"
+
+[bank]
+# Optional: point at a local HyperShift (hs-main) checkout. The question
+# bank is then loaded live from skills/hypershift-quiz/questions/*.yaml,
+# so the server always quizzes whatever branch you have checked out.
+# Accepts either the repository root or the questions directory itself.
+# When empty, the bank embedded in this binary is used (sync it with
+# scripts/sync-bank.sh).
+path = ""
+
+[game]
+# Questions per game (0 = all). The deck is mcq-only for now, shuffled.
+rounds = 15
+# Seconds per question.
+seconds_per_question = 30
