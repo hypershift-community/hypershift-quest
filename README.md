@@ -91,7 +91,20 @@ Questions live in and are reviewed with
 `skills/hypershift-quiz/SKILL.md` there for the schema and authoring
 rules (cite files and symbols, never line numbers; every question must be
 answerable from its cited source; a wrong question is a bug). This repo
-only consumes the bank.
+consumes the bank, and community-authored cards can start life in
+`bank/local.yaml` (never touched by sync) before being upstreamed.
+
+## Developing
+
+See [AGENTS.md](AGENTS.md) for the full guide — architecture, the
+never-leak-answers rule, the question schema and authoring conventions,
+and the roadmap. Before considering a change done:
+
+```bash
+make vet fmt lint smoke
+```
+
+CI runs the same set on every push and pull request.
 
 ## License
 
