@@ -120,11 +120,12 @@ func (h *Hub) Answer(r *http.Request) (any, error) {
 	var body struct {
 		PlayerID string `json:"playerId"`
 		OptionID int    `json:"optionId"`
+		Text     string `json:"text"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		return nil, fmt.Errorf("bad request body")
 	}
-	return nil, room.answer(body.PlayerID, body.OptionID)
+	return nil, room.answer(body.PlayerID, body.OptionID, body.Text)
 }
 
 func (h *Hub) HostAction(r *http.Request) (any, error) {
@@ -136,19 +137,61 @@ func (h *Hub) HostAction(r *http.Request) (any, error) {
 		HostID string `json:"hostId"`
 	}
 	json.NewDecoder(r.Body).Decode(&body)
-	action := r.PathValue("action")
-	switch action {
+	if body.HostID != room.hostID {
+		return nil, fmt.Errorf("not the host")
+	}
+	switch r.PathValue("action") {
 	case "start":
 		return nil, room.start()
 	case "next":
 		return nil, room.next()
-	case "skip":
-		return nil, room.next() // skip == move on without revealing (v1: same as next after reveal)
 	case "end":
 		return nil, room.end()
 	default:
-		return nil, fmt.Errorf("unknown host action %q", action)
+		return nil, fmt.Errorf("unknown host action %q", r.PathValue("action"))
 	}
+}
+
+// GradingQueue returns the open-format round awaiting grades: the
+// question with its rubric plus every player's submitted text. Host-only.
+func (h *Hub) GradingQueue(r *http.Request) (any, error) {
+	room, err := h.getRoom(r.PathValue("code"))
+	if err != nil {
+		return nil, err
+	}
+	return room.gradingQueue(r.URL.Query().Get("hostId"))
+}
+
+// Grade records one player's grade for the current open-format round.
+// Host-only; typically called by the host's Claude session acting as
+// game master (see skills/quest-gamemaster).
+func (h *Hub) Grade(r *http.Request) (any, error) {
+	room, err := h.getRoom(r.PathValue("code"))
+	if err != nil {
+		return nil, err
+	}
+	var body struct {
+		HostID   string `json:"hostId"`
+		PlayerID string `json:"playerId"`
+		Gained   int    `json:"gained"`
+		Feedback string `json:"feedback"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		return nil, fmt.Errorf("bad request body")
+	}
+	return nil, room.grade(body.HostID, body.PlayerID, body.Gained, body.Feedback)
+}
+
+func (h *Hub) CompleteGrading(r *http.Request) (any, error) {
+	room, err := h.getRoom(r.PathValue("code"))
+	if err != nil {
+		return nil, err
+	}
+	var body struct {
+		HostID string `json:"hostId"`
+	}
+	json.NewDecoder(r.Body).Decode(&body)
+	return nil, room.completeGrading(body.HostID)
 }
 
 func (h *Hub) HostView(r *http.Request) (any, error) {
@@ -162,15 +205,20 @@ func (h *Hub) HostView(r *http.Request) (any, error) {
 // --------------------------------------------------------------- room ---
 
 type Player struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Score       int    `json:"score"`
-	Tile        int    `json:"tile"`
-	Streak      int    `json:"streak"`
-	Answered    bool   `json:"answered"`
-	LastCorrect bool   `json:"lastCorrect"`
-	LastGained  int    `json:"lastGained"`
-	choice      int    // internal: option index chosen this round
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	Score         int    `json:"score"`
+	Tile          int    `json:"tile"`
+	Streak        int    `json:"streak"`
+	Answered      bool   `json:"answered"`
+	LastCorrect   bool   `json:"lastCorrect"`
+	LastGained    int    `json:"lastGained"`
+	LastFeedback  string `json:"lastFeedback,omitempty"`
+	choice        int    // internal: option index chosen this round (mcq)
+	answerText    string // internal: submitted text (open formats)
+	graded        bool   // internal: grade recorded for this round
+	gradeGained   int    // internal: points awarded by the grader
+	gradeFeedback string // internal: grader feedback shown at reveal
 }
 
 type Room struct {
@@ -180,7 +228,7 @@ type Room struct {
 	mu           sync.Mutex
 	players      map[string]*Player
 	order        []string // join order
-	phase        string   // lobby | question | reveal | finished
+	phase        string   // lobby | question | grading | reveal | finished
 	deck         []Question
 	round        int // index into deck
 	deadline     time.Time
@@ -194,42 +242,65 @@ type Room struct {
 }
 
 type revealInfo struct {
-	CorrectID int            `json:"correctId"`
+	Format    string         `json:"format"`
+	CorrectID int            `json:"correctId"` // -1 for open formats
 	Why       string         `json:"why"`
 	Source    string         `json:"source"`
 	Results   []playerResult `json:"results"`
 }
 
 type playerResult struct {
-	Name    string `json:"name"`
-	Correct bool   `json:"correct"`
-	Gained  int    `json:"gained"`
+	Name     string `json:"name"`
+	Correct  bool   `json:"correct"`
+	Gained   int    `json:"gained"`
+	Feedback string `json:"feedback,omitempty"`
 }
 
 func newRoom(code string, questions []Question, board Board, cfg Config) *Room {
-	// v1 deck: mcq only, shuffled.
-	var mcq []Question
+	deck := make([]Question, 0, len(questions))
 	for _, q := range questions {
-		if q.Format == "mcq" && len(q.Options) >= 2 {
-			mcq = append(mcq, q)
+		if !q.playable() {
+			continue
 		}
+		if len(cfg.Game.Formats) > 0 && !contains(cfg.Game.Formats, q.Format) {
+			continue
+		}
+		deck = append(deck, q)
 	}
-	rand.Shuffle(len(mcq), func(i, j int) { mcq[i], mcq[j] = mcq[j], mcq[i] })
+	rand.Shuffle(len(deck), func(i, j int) { deck[i], deck[j] = deck[j], deck[i] })
 	n := cfg.Game.Rounds
-	if n <= 0 || n > len(mcq) {
-		n = len(mcq)
+	if n <= 0 || n > len(deck) {
+		n = len(deck)
 	}
 	return &Room{
 		Code:         code,
 		hostID:       randomID("host"),
 		players:      map[string]*Player{},
 		phase:        "lobby",
-		deck:         mcq[:n],
+		deck:         deck[:n],
 		board:        board,
 		cfg:          cfg,
 		subs:         map[chan []byte]struct{}{},
 		lastActivity: time.Now(),
 	}
+}
+
+// playable means the question can run in the multiplayer engine:
+// mcq auto-grades; the rubric formats go through the grading phase.
+func (q Question) playable() bool {
+	if q.Format == "mcq" {
+		return len(q.Options) >= 2
+	}
+	return q.Rubric != nil && len(q.Rubric.MustCover) > 0
+}
+
+func contains(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Room) close() {
@@ -273,12 +344,17 @@ func (r *Room) start() error {
 
 func (r *Room) beginRoundLocked() {
 	q := r.deck[r.round]
-	// Shuffle the option order so correct answers are not positionally
-	// predictable across rooms.
-	r.optionOrder = rand.Perm(len(q.Options))
+	if q.Format == "mcq" {
+		// Shuffle the option order so correct answers are not
+		// positionally predictable across rooms.
+		r.optionOrder = rand.Perm(len(q.Options))
+	} else {
+		r.optionOrder = nil
+	}
 	for _, p := range r.players {
-		p.Answered, p.LastCorrect, p.LastGained = false, false, 0
-		p.choice = -1
+		p.Answered, p.LastCorrect, p.LastGained, p.LastFeedback = false, false, 0, ""
+		p.choice, p.answerText = -1, ""
+		p.graded, p.gradeGained, p.gradeFeedback = false, 0, ""
 	}
 	r.reveal = nil
 	r.phase = "question"
@@ -288,12 +364,12 @@ func (r *Room) beginRoundLocked() {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		if r.phase == "question" && r.round < len(r.deck) {
-			r.evaluateLocked()
+			r.finishQuestionLocked()
 		}
 	})
 }
 
-func (r *Room) answer(playerID string, optionID int) error {
+func (r *Room) answer(playerID string, optionID int, text string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.touch()
@@ -310,10 +386,24 @@ func (r *Room) answer(playerID string, optionID int) error {
 	if time.Now().After(r.deadline) {
 		return fmt.Errorf("time is up")
 	}
+	q := r.deck[r.round]
+	if q.Format == "mcq" {
+		if optionID < 0 || optionID >= len(q.Options) {
+			return fmt.Errorf("no such option")
+		}
+		p.choice = optionID
+	} else {
+		if len(text) == 0 {
+			return fmt.Errorf("an answer is required")
+		}
+		if len(text) > 8000 {
+			text = text[:8000]
+		}
+		p.answerText = text
+	}
 	p.Answered = true
-	p.choice = optionID
 	if r.allAnsweredLocked() {
-		r.evaluateLocked()
+		r.finishQuestionLocked()
 	} else {
 		r.broadcast()
 	}
@@ -329,7 +419,19 @@ func (r *Room) allAnsweredLocked() bool {
 	return true
 }
 
-// evaluateLocked grades the round, awards points, advances tiles, and
+// finishQuestionLocked ends the answering window: mcq rounds are graded
+// immediately; rubric rounds wait in the grading phase for the game
+// master (the host's Claude session, see skills/quest-gamemaster).
+func (r *Room) finishQuestionLocked() {
+	if r.deck[r.round].Format == "mcq" {
+		r.evaluateLocked()
+	} else {
+		r.phase = "grading"
+		r.broadcast()
+	}
+}
+
+// evaluateLocked grades an mcq round, awards points, advances tiles, and
 // moves to the reveal phase.
 func (r *Room) evaluateLocked() {
 	q := r.deck[r.round]
@@ -350,8 +452,7 @@ func (r *Room) evaluateLocked() {
 		frac = remaining / total
 	}
 
-	rev := &revealInfo{CorrectID: correctID, Why: q.Why, Source: q.Source}
-	// Score in join order for deterministic tie behavior.
+	rev := &revealInfo{Format: "mcq", CorrectID: correctID, Why: q.Why, Source: q.Source}
 	for _, id := range r.order {
 		p := r.players[id]
 		res := playerResult{Name: p.Name}
@@ -388,6 +489,142 @@ func (r *Room) evaluateLocked() {
 	r.broadcast()
 }
 
+// gradingQueue exposes the submitted open-format answers with the
+// rubric, for the game master. Answer texts are host-only.
+func (r *Room) gradingQueue(hostID string) (any, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if hostID != r.hostID {
+		return nil, fmt.Errorf("not the host")
+	}
+	if r.phase != "grading" {
+		return nil, fmt.Errorf("no round is awaiting grading (phase %q)", r.phase)
+	}
+	q := r.deck[r.round]
+	type submission struct {
+		PlayerID string `json:"playerId"`
+		Name     string `json:"name"`
+		Answered bool   `json:"answered"`
+		Text     string `json:"text"`
+		Graded   bool   `json:"graded"`
+		Gained   int    `json:"gained"`
+	}
+	base := q.Depth * 10
+	out := map[string]any{
+		"round":      r.round,
+		"totalRound": len(r.deck),
+		"question": map[string]any{
+			"id": q.ID, "topic": q.Topic, "depth": q.Depth, "format": q.Format,
+			"text": q.Question, "base": base, "half": base / 2,
+		},
+		"rubric": q.Rubric,
+		"why":    q.Why,
+		"source": q.Source,
+	}
+	var subs []submission
+	for _, id := range r.order {
+		p := r.players[id]
+		subs = append(subs, submission{
+			PlayerID: p.ID, Name: p.Name, Answered: p.Answered,
+			Text: p.answerText, Graded: p.graded, Gained: p.gradeGained,
+		})
+	}
+	out["submissions"] = subs
+	return out, nil
+}
+
+// grade records the game master's verdict for one player. gained is the
+// points award (base for full credit, base/2 for half, 0 for a miss);
+// full credit advances the token and feeds the streak.
+func (r *Room) grade(hostID, playerID string, gained int, feedback string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.touch()
+	if hostID != r.hostID {
+		return fmt.Errorf("not the host")
+	}
+	if r.phase != "grading" {
+		return fmt.Errorf("no round is awaiting grading (phase %q)", r.phase)
+	}
+	p, ok := r.players[playerID]
+	if !ok {
+		return fmt.Errorf("unknown player")
+	}
+	if gained < 0 {
+		return fmt.Errorf("gained must be >= 0")
+	}
+	if len(feedback) > 1000 {
+		feedback = feedback[:1000]
+	}
+	p.graded = true
+	p.gradeGained = gained
+	p.gradeFeedback = feedback
+	return nil
+}
+
+// completeGrading finalizes the open round: applies recorded grades
+// (ungraded players score zero), advances tiles for full credit, and
+// reveals.
+func (r *Room) completeGrading(hostID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if hostID != r.hostID {
+		return fmt.Errorf("not the host")
+	}
+	if r.phase != "grading" {
+		return fmt.Errorf("no round is awaiting grading (phase %q)", r.phase)
+	}
+	r.completeGradingLocked()
+	return nil
+}
+
+func (r *Room) completeGradingLocked() {
+	q := r.deck[r.round]
+	base := q.Depth * 10
+	rev := &revealInfo{Format: q.Format, CorrectID: -1, Why: q.Why, Source: q.Source}
+	for _, id := range r.order {
+		p := r.players[id]
+		res := playerResult{Name: p.Name, Feedback: p.gradeFeedback}
+		if p.graded {
+			res.Gained = p.gradeGained
+			p.Score += res.Gained
+			if res.Gained >= base && base > 0 {
+				// Full credit: tile advance and streak, like a
+				// correct mcq answer (no speed bonus for typed
+				// answers — typing speed is not the game).
+				p.Streak++
+				streakBonus := 2 * p.Streak
+				if streakBonus > 10 {
+					streakBonus = 10
+				}
+				res.Gained += streakBonus
+				p.Score += streakBonus
+				res.Correct = true
+				advance := 2
+				if p.Streak >= 3 {
+					advance = 3
+				}
+				p.Tile += advance
+				if p.Tile > 24 {
+					p.Tile = 24
+				}
+				if p.Tile == 24 && r.winner == "" {
+					r.winner = p.Name
+				}
+			} else {
+				p.Streak = 0
+			}
+		} else {
+			p.Streak = 0
+		}
+		p.LastCorrect, p.LastGained, p.LastFeedback = res.Correct, res.Gained, res.Feedback
+		rev.Results = append(rev.Results, res)
+	}
+	r.reveal = rev
+	r.phase = "reveal"
+	r.broadcast()
+}
+
 func (r *Room) next() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -395,8 +632,11 @@ func (r *Room) next() error {
 	switch r.phase {
 	case "reveal":
 	case "question":
-		// host skips: evaluate first so the reveal is consistent
-		r.evaluateLocked()
+		r.finishQuestionLocked()
+		return nil
+	case "grading":
+		// host skips grading: finalize with whatever grades exist
+		r.completeGradingLocked()
 		return nil
 	case "finished":
 		return nil
@@ -436,13 +676,14 @@ type wireQuestion struct {
 }
 
 type wirePlayer struct {
-	Name        string `json:"name"`
-	Score       int    `json:"score"`
-	Tile        int    `json:"tile"`
-	Streak      int    `json:"streak"`
-	Answered    bool   `json:"answered"`
-	LastCorrect bool   `json:"lastCorrect"`
-	LastGained  int    `json:"lastGained"`
+	Name         string `json:"name"`
+	Score        int    `json:"score"`
+	Tile         int    `json:"tile"`
+	Streak       int    `json:"streak"`
+	Answered     bool   `json:"answered"`
+	LastCorrect  bool   `json:"lastCorrect"`
+	LastGained   int    `json:"lastGained"`
+	LastFeedback string `json:"lastFeedback,omitempty"`
 }
 
 type wireState struct {
@@ -465,7 +706,6 @@ func (r *Room) publicState() map[string]any {
 }
 
 func (r *Room) stateLocked() map[string]any {
-	// Board is static; serialize once per room.
 	st := wireState{
 		Code:       r.Code,
 		Phase:      r.phase,
@@ -479,9 +719,10 @@ func (r *Room) stateLocked() map[string]any {
 		st.Players = append(st.Players, wirePlayer{
 			Name: p.Name, Score: p.Score, Tile: p.Tile, Streak: p.Streak,
 			Answered: p.Answered, LastCorrect: p.LastCorrect, LastGained: p.LastGained,
+			LastFeedback: p.LastFeedback,
 		})
 	}
-	if r.phase == "question" || r.phase == "reveal" {
+	if r.phase == "question" || r.phase == "grading" || r.phase == "reveal" {
 		q := r.deck[r.round]
 		wq := &wireQuestion{Topic: q.Topic, Depth: q.Depth, Format: q.Format, Text: q.Question, Seconds: r.cfg.Game.SecondsPerQuestion}
 		for _, orig := range r.optionOrder {
@@ -511,7 +752,7 @@ func (r *Room) hostView(hostID string) (any, error) {
 		return nil, fmt.Errorf("not the host")
 	}
 	out := r.stateLocked()
-	if r.phase == "question" || r.phase == "reveal" {
+	if r.phase == "question" || r.phase == "grading" || r.phase == "reveal" {
 		q := r.deck[r.round]
 		correct := ""
 		for _, o := range q.Options {

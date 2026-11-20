@@ -45,8 +45,9 @@ type Config struct {
 		Path string `toml:"path"`
 	} `toml:"bank"`
 	Game struct {
-		Rounds             int `toml:"rounds"`               // questions per game; 0 = all
-		SecondsPerQuestion int `toml:"seconds_per_question"` // timer per question
+		Rounds             int      `toml:"rounds"`               // questions per game; 0 = all
+		SecondsPerQuestion int      `toml:"seconds_per_question"` // timer per question
+		Formats            []string `toml:"formats"`              // deck filter, e.g. ["mcq"]; empty = all
 	} `toml:"game"`
 }
 
@@ -115,6 +116,9 @@ func main() {
 	mux.HandleFunc("POST /api/rooms/{code}/answer", jsonHandler(hub.Answer))
 	mux.HandleFunc("POST /api/rooms/{code}/host/{action}", jsonHandler(hub.HostAction))
 	mux.HandleFunc("GET /api/rooms/{code}/hostview", jsonHandler(hub.HostView))
+	mux.HandleFunc("GET /api/rooms/{code}/grading", jsonHandler(hub.GradingQueue))
+	mux.HandleFunc("POST /api/rooms/{code}/grade", jsonHandler(hub.Grade))
+	mux.HandleFunc("POST /api/rooms/{code}/complete-grading", jsonHandler(hub.CompleteGrading))
 
 	log.Printf("listening on %s — players: http://<this-host>%s/  host: /host  board: /board", hostLabel(cfg.Addr), portLabel(cfg.Addr))
 	srv := &http.Server{

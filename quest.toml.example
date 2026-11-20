@@ -15,7 +15,12 @@ addr = ":8080"
 path = ""
 
 [game]
-# Questions per game (0 = all). The deck is mcq-only for now, shuffled.
+# Questions per game (0 = all), shuffled.
 rounds = 15
 # Seconds per question.
 seconds_per_question = 30
+# Optional deck format filter, e.g. ["mcq"] for an auto-graded-only
+# night. Empty means all formats: mcq rounds auto-grade, and the rubric
+# formats (explain, code, scenario) wait in a grading phase for the game
+# master — the host's Claude session, see skills/quest-gamemaster.
+formats = []

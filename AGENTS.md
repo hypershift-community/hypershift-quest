@@ -22,6 +22,7 @@ game: same bank, multiplayer rules.
 | `game.go` | Hub/Room/Player, game state machine, SSE, scoring |
 | `web/app.html` | The entire UI — one page, role picked by path (`/`, `/host`, `/board`) |
 | `bank/` | Question YAML (synced from upstream) + `board.yaml` + `local.yaml` (community cards) |
+| `skills/quest-gamemaster/` | Skill for the host's Claude session — the grading engine for open-format rounds |
 | `scripts/` | `sync-bank.sh`, `lint-bank.py`, `smoke.sh` |
 
 Deliberate constraints: Go stdlib plus only `BurntSushi/toml` and
@@ -40,23 +41,38 @@ correct-answer information; run it after touching `game.go` or the web UI.
 ## Game state machine
 
 ```
-lobby → question → reveal → (host: next) → question … → finished
+lobby → question → ┬→ reveal → (host: next) → question … → finished
+                   └→ grading → (game master grades) → reveal
 ```
 
+- **mcq rounds** auto-grade when the deadline expires or everyone has
+  answered. **Rubric rounds** (explain, code, scenario) enter the `grading`
+  phase: answer texts are held host-only, and the game master — the host's
+  Claude session running `skills/quest-gamemaster` — fetches the queue
+  (`GET /api/rooms/{code}/grading?hostId=…`), grades each submission against
+  the rubric (`POST /api/rooms/{code}/grade`), and completes the round
+  (`POST /api/rooms/{code}/complete-grading`), which applies scores, advances
+  tiles and reveals with per-player feedback.
 - All transitions happen under `Room.mu`; `broadcast()` sends a **full state
   snapshot** to every SSE subscriber (simple and reconnect-friendly — no
   diffing).
-- The question phase has a server-side deadline; a `time.AfterFunc` evaluates
-  the round if the timer expires, and `answer()` evaluates early when every
-  player has answered.
+- The question phase has a server-side deadline; a `time.AfterFunc` closes
+  the answering window if the timer expires, and `answer()` closes it early
+  when every player has answered.
 - Rooms are in-memory and expire after two idle hours; restarting the binary
   clears everything. This is a game-night tool, not a service.
 
-Scoring (tuning knobs, all in `evaluateLocked`): `depth × 10` base, up to
-`+50%` speed bonus (fraction of time remaining), streak bonus `2 × streak`
-capped at 10. Correct answers advance the token 2 tiles (3 on a 🔥 streak of
-3+); first token to 24 wins, else best position after the deck runs out.
-The deck is currently **mcq-only**, shuffled, sized by `[game].rounds`.
+Scoring (tuning knobs, in `evaluateLocked` and `completeGradingLocked`):
+`depth × 10` base; mcq adds up to `+50%` speed bonus (fraction of time
+remaining) — open rounds deliberately have no speed bonus, typing speed is
+not the game; streak bonus `2 × streak` capped at 10. **Full credit**
+(gained ≥ base) advances the token 2 tiles (3 on a 🔥 streak of 3+); half
+credit scores points only. First token to 24 wins, else best position after
+the deck runs out.
+
+The deck is shuffled and sized by `[game].rounds`; `[game].formats` filters
+it (e.g. `["mcq"]` for an auto-graded-only night — empty means all formats,
+with rubric rounds waiting for the game master).
 
 ## The question bank
 
@@ -90,8 +106,9 @@ Authoring rules, inherited from the upstream skill and enforced by review:
 - `depth` measures how many moving parts the answer connects, not how
   surprising the fact is. Single-mechanism facts are depth ≤ 2; cross-owner
   reasoning, invariants and debugging ladders are depth 3+.
-- Only `mcq` cards play in the current deck; keep authoring the rubric
-  formats too — they load fine and are waiting for the host-grading console.
+- All four formats play: `mcq` auto-grades; `explain`, `code` and
+  `scenario` are graded by the game master against `rubric.must_cover`
+  (see `skills/quest-gamemaster/SKILL.md` for the grading bands).
 
 ### Where cards live
 
@@ -144,15 +161,15 @@ genuinely hurts; no framework, no build step.
 
 Ordered by leverage; each is a self-contained improvement:
 
-1. **Host-grading console** for rubric formats — `hostView` already ships the
-   rubric; the missing piece is a host-side UI listing each player's
-   free-text answer with `must_cover` checkboxes, and a scoring endpoint.
-2. **Depth-aware decks** — host picks a depth mix or per-round category;
-   currently the deck is a flat shuffle of all mcq.
-3. **Season leaderboard** — append-only JSON file of finished games.
-4. **Container image + OpenShift manifest** — run game night on a hosted
+1. **Depth-aware decks** — host picks a depth mix or per-round category;
+   currently the deck is a flat shuffle filtered only by format.
+2. **Season leaderboard** — append-only JSON file of finished games.
+3. **Container image + OpenShift manifest** — run game night on a hosted
    control plane, for maximum thematic correctness.
-5. **Reveal pacing / lobby settings** — per-room time limit, rounds.
+4. **Reveal pacing / lobby settings** — per-room time limit, rounds.
+5. **Manual grading console** — the grading API already supports it; a
+   host-side UI with `must_cover` checkboxes would let a human grade when
+   no Claude session is available.
 
 When making changes, prefer extending the wire structs and the state machine
 over parallel mechanisms, and keep the public state free of answer data.

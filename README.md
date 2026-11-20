@@ -71,18 +71,32 @@ scripts/sync-bank.sh /path/to/hs-main && go build .
 | `/host` | game master | room code, roster, start/next/end, answer preview |
 | `/board` | big screen | all tokens on the quest board + leaderboard + question |
 
+## The game master: grading with the host's Claude session
+
+Multiple-choice rounds grade themselves. The rubric rounds — explain-why,
+code reading, scenario — are graded by a game master: **the host's Claude
+session**, using the [`quest-gamemaster`](skills/quest-gamemaster/SKILL.md)
+skill. The host console shows a game-master key; give the room code and that
+key to Claude and ask it to run the game. Claude watches for the grading
+phase, fetches each player's answer with the question's rubric, grades by
+the proven solo-game rules (≥80% of rubric items = full credit, 40–79% =
+half, common mistakes capped at half with the correction named), and posts
+scores with feedback that players see at the reveal.
+
+Answer texts and rubrics are host-only — the public game state never
+contains them, and the smoke test asserts it.
+
+To run an auto-graded-only night instead, set `formats = ["mcq"]` in the
+config.
+
 ## Notes and limits
 
 - Deliberately **no authentication** — this is a LAN/VPN game night tool,
   not a service. Rooms expire after two idle hours; restarting the binary
   clears everything.
-- The deck is **mcq-only** for now (45 of the 113 questions). The bank's
-  explain/code/scenario formats with rubrics are loaded and ready for the
-  planned host-grading console, where the host ticks rubric items per
-  player answer.
-- Roadmap: open-format rounds with host grading, season leaderboards,
-  container image for running on an internal OpenShift cluster (playing
-  the HyperShift quiz on a hosted control plane is encouraged).
+- Roadmap: depth-aware decks, season leaderboards, container image for
+  running on an internal OpenShift cluster (playing the HyperShift quiz on
+  a hosted control plane is encouraged).
 
 ## Contributing questions
 

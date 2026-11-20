@@ -21,9 +21,9 @@
   .sub { color: var(--dim); margin-bottom: 16px; }
   .card { background: var(--panel); border: 1px solid var(--line);
     border-radius: 10px; padding: 16px; margin-bottom: 14px; }
-  input, button { font: inherit; border-radius: 8px; border: 1px solid var(--line);
+  input, textarea, button { font: inherit; border-radius: 8px; border: 1px solid var(--line);
     background: var(--panel2); color: var(--fg); padding: 10px 14px; }
-  input { width: 100%; }
+  input, textarea { width: 100%; }
   button { cursor: pointer; font-weight: 600; }
   button.primary { background: #238636; border-color: #2ea043; }
   button:disabled { opacity: .45; cursor: not-allowed; }
@@ -248,16 +248,27 @@ function questionBlock(interactive) {
       <span class="muted">question ${state.round + 1}/${state.totalRounds}</span>
     </div>
     <div style="font-size:19px;font-weight:600;margin:6px 0 4px;white-space:pre-wrap">${esc(q.text)}</div>
-    <div class="timer" id="timer"><div></div></div>
-    <div class="opts ${q.options.length === 4 ? "two" : ""}">` +
-    q.options.map((o, i) =>
-      `<button class="opt ${optionClass(o, interactive)}" data-id="${o.id}" ${interactive ? "" : "disabled"}>${esc(o.text)}</button>`
-    ).join("") + "</div>";
+    <div class="timer" id="timer"><div></div></div>` +
+    questionBody(q, interactive) + "";
   if (state.reveal) {
     html += `<div class="why"><p>${esc(state.reveal.why)}</p><p class="src">source: ${esc(state.reveal.source)}</p></div>`;
   }
   html += "</div>";
   return html;
+}
+
+function questionBody(q, interactive) {
+  if (q.format === "mcq") {
+    return `<div class="opts ${q.options.length === 4 ? "two" : ""}">` +
+      q.options.map((o) =>
+        `<button class="opt ${optionClass(o, interactive)}" data-id="${o.id}" ${interactive ? "" : "disabled"}>${esc(o.text)}</button>`
+      ).join("") + "</div>";
+  }
+  if (interactive) {
+    return `<textarea id="ans" rows="5" placeholder="Your answer, in your own words…"></textarea>
+      <button class="primary" id="send" style="margin-top:10px">Lock in answer</button>`;
+  }
+  return `<p class="muted">Open answer — players submit text and the game master grades it against the question's rubric.</p>`;
 }
 
 function optionClass(o, interactive) {
@@ -294,7 +305,7 @@ function renderPlayer(app) {
   if (state.phase === "lobby") {
     main.appendChild(el(`<div class="card"><p>Waiting in the lobby…</p>
       <p class="muted">The host starts the game when everyone is in. ${state.players.length} player(s) so far.</p></div>`));
-  } else if (state.phase === "question" || state.phase === "reveal") {
+  } else if (state.phase === "question" || state.phase === "grading" || state.phase === "reveal") {
     main.appendChild(el(questionBlock(state.phase === "question")));
     startTimer();
     main.querySelectorAll(".opt").forEach(btn => {
@@ -305,10 +316,24 @@ function renderPlayer(app) {
         } catch (e) { /* already answered, timed out, … */ }
       };
     });
+    const send = main.querySelector("#send");
+    if (send) send.onclick = async () => {
+      const t = main.querySelector("#ans").value.trim();
+      if (!t) return;
+      try {
+        await api(`/api/rooms/${state.code}/answer`, { playerId: store.get(LS.player), text: t });
+        send.disabled = true; send.textContent = "Answer locked in ✓";
+      } catch (e) { /* already answered or timed out */ }
+    };
+    if (state.phase === "grading") {
+      main.appendChild(el(`<div class="card"><p>Answers are in — the game master is grading…</p></div>`));
+    }
     if (state.phase === "reveal") {
       const res = (state.reveal.results || []);
       main.appendChild(el(`<div class="card">${
-        res.map(r => `<div>${r.correct ? "✅" : "❌"} ${esc(r.name)} ${r.correct ? '<span class="gained">+' + r.gained + "</span>" : ""}</div>`).join("")
+        res.map(r => `<div>${r.correct ? "✅" : (r.gained > 0 ? "🟡" : "❌")} ${esc(r.name)}
+          ${r.gained > 0 ? '<span class="gained">+' + r.gained + "</span>" : ""}
+          ${r.feedback ? '<div class="muted" style="margin:2px 0 8px 24px">' + esc(r.feedback) + "</div>" : ""}</div>`).join("")
       }</div>`));
     }
   } else if (state.phase === "finished") {
@@ -320,7 +345,7 @@ function renderPlayer(app) {
 
 function renderHost(app) {
   const shell = el(`<div>
-    ${header(`host console — room <b class="big" style="font-size:24px">${esc(state.code)}</b>`)}
+    ${header(`host console — room <b class="big" style="font-size:24px">${esc(state.code)}</b> · game-master key <code>${esc(store.get(LS.host))}</code>`)}
     <div class="flex2"><div id="main"></div>
     <div class="card"><h3 style="margin-bottom:8px">Players</h3>${leaderboard()}
       <div class="row" style="margin-top:12px">
@@ -380,7 +405,7 @@ function renderBoard(app) {
 /* ---- shared ---- */
 
 function phaseLabel() {
-  return { lobby: "lobby", question: "question live", reveal: "reveal", finished: "game over" }[state.phase] || state.phase;
+  return { lobby: "lobby", question: "question live", grading: "game master grading", reveal: "reveal", finished: "game over" }[state.phase] || state.phase;
 }
 
 function finishCard() {
